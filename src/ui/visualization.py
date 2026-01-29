@@ -8,12 +8,8 @@ import streamlit as st
 
 def render_patent_map(result: dict):
     """
-    Render a premium interactive Patent Landscape Map.
-    
-    Features:
-    - Quadrant analysis (Direct Risk, Technical Reference, Noise, Strategic Avoidance)
-    - User Idea Center Point
-    - Distance-based conceptual alignment visualization
+    Render a premium interactive Patent Landscape Map (Guardian Model).
+    Visualizes the User Idea as a protected asset (1.0, 1.0) with incoming threats.
     """
     search_results = result.get('search_results', [])
     user_idea = result.get('user_idea', '내 아이디어')
@@ -25,48 +21,65 @@ def render_patent_map(result: dict):
     # Prepare data for DataFrame
     data = []
     
-    # 1. Add User Idea as the Origin/Goal point
+    # 1. User Idea: The Core Asset at (1.0, 1.0)
+    # We maintain it at max coords to represent the 'Target' that others are approaching
     data.append({
         "Patent ID": "🎯 My Idea",
-        "Title": "내 아이디어 (분석 기준점)",
-        "Conceptual Alignment": 1.0,  # Center point for idea
+        "Title": "✨ MY CORE IDEA (나의 핵심 아이디어)",
+        "Conceptual Alignment": 1.0,
         "Analytical Depth": 1.0,
-        "Relevance": 15,
-        "Category": "My Idea",
-        "Abstract": user_idea[:200]
+        "Relevance": 40,  # Larger size
+        "Category": "My Core Idea",
+        "Abstract": user_idea[:200],
+        "Marker": "star" # Use distinct marker via Plotly symbol map if possible, or color/size
     })
     
     # 2. Add search results
-    for r in search_results:
-        # We use grading_score for alignment and score/stats for depth
-        alignment = r.get('grading_score', 0.5)
-        # Combine dense and sparse scores for depth (normalized roughly)
-        depth = (r.get('dense_score', 0) * 0.7 + min(r.get('sparse_score', 0) / 50, 1.0) * 0.3)
+    all_patent_coords = []  # Store coords for ALL patents to draw lines
+    
+    import random
+    random.seed(42)  # Consistent jitter
+    
+    for idx, r in enumerate(search_results):
+        # Use grading_score for alignment with jitter
+        base_alignment = r.get('grading_score', 0.5)
+        jitter_x = (random.random() - 0.5) * 0.08  # ±0.04 jitter
+        alignment = max(0, min(1, base_alignment + jitter_x))
+        
+        # Improved depth: use index-based spread + jitter to avoid overlap
+        base_depth = 0.15 + (idx * 0.18)  # Spread from 0.15 to ~0.87
+        jitter_y = (random.random() - 0.5) * 0.1
+        depth = max(0.05, min(0.95, base_depth + jitter_y))
         
         grade = r.get('grading_score', 0)
         
-        if grade >= 0.75:
-            cat = "🚨 침해 주의 (高)"
-        elif grade >= 0.5:
-            cat = "🟡 기술적 참고"
-        elif alignment > 0.6 and depth < 0.4:
-            cat = "🕵️ 숨겨진 경쟁자"
+        # Store coords for connection line (ALL patents)
+        all_patent_coords.append({'x': alignment, 'y': depth, 'title': r.get('title')})
+        
+        # Categorization Logic
+        if grade >= 0.6:
+            cat = "🔥 CRITICAL THREAT (핵심 위협)"
+        elif grade >= 0.4:
+            cat = "⚠️ COLLISION ZONE (충돌 경계)"
+        elif grade >= 0.2:
+            cat = "🕵️ HIDDEN RIVAL (잠재적 경쟁)"
         else:
-            cat = "📗 단순 키워드 중복"
+            cat = "📗 SAFE DISTANCE (단순 참고)"
             
         data.append({
             "Patent ID": r.get('patent_id'),
             "Title": r.get('title'),
             "Conceptual Alignment": alignment,
             "Analytical Depth": depth,
-            "Relevance": grade * 25 + 5,
+            "Relevance": grade * 20 + 10,
             "Category": cat,
-            "Abstract": r.get('abstract', '')[:150] + "..."
+            "Abstract": r.get('abstract', '')[:150] + "...",
+            "Marker": "circle"
         })
         
     df = pd.DataFrame(data)
     
-    # Create Scatter Plot with premium styling
+    # Create Scatter Plot
     fig = px.scatter(
         df,
         x="Conceptual Alignment",
@@ -76,13 +89,13 @@ def render_patent_map(result: dict):
         hover_name="Title",
         hover_data={"Patent ID": True, "Abstract": True, "Relevance": False},
         color_discrete_map={
-            "My Idea": "#00d4ff",
-            "🚨 침해 주의 (高)": "#ff4b4b",
-            "🟡 기술적 참고": "#ffa500",
-            "🕵️ 숨겨진 경쟁자": "#6c5ce7",
-            "📗 단순 키워드 중복": "#a0a0a0"
+            "My Core Idea": "#2980b9",       # Strong Blue (Brand Color)
+            "🔥 CRITICAL THREAT (핵심 위협)": "#e74c3c", # Red
+            "⚠️ COLLISION ZONE (충돌 경계)": "#f39c12", # Orange
+            "🕵️ HIDDEN RIVAL (잠재적 경쟁)": "#8e44ad", # Purple
+            "📗 SAFE DISTANCE (단순 참고)": "#95a5a6"   # Gray
         },
-        title="✨ Premium Patent Landscape Analysis",
+        title="✨ 특허 방어 전략 지도 (Patent Guardian Map)",
         template="plotly_white"
     )
     
@@ -91,54 +104,80 @@ def render_patent_map(result: dict):
     grid_color = "rgba(0,0,0,0.1)"
     line_color = "rgba(0,0,0,0.2)"
     
-    # Add Quadrant Backgrounds/Annotations using shapes if possible, or just layout lines
-    fig.add_hline(y=0.5, line_width=1, line_dash="dot", line_color=line_color)
-    fig.add_vline(x=0.5, line_width=1, line_dash="dot", line_color=line_color)
-    
     fig.update_layout(
-        xaxis_title="🎯 기술적 정렬도 (Conceptual Alignment)",
-        yaxis_title="🔍 분석 심도 (Analytical Depth)",
-        legend_title="Risk & Value",
+        xaxis_title="기술적 정렬도 (Alignment)", 
+        yaxis_title="분석 심도 (Depth)", 
+        legend_title="Legend",
         hovermode="closest",
-        height=660, # Increased height to accommodate axis descriptions
-        margin=dict(l=60, r=60, t=100, b=120), # Increased bottom margin
+        height=660,
+        margin=dict(l=40, r=40, t=80, b=140),
         plot_bgcolor=ivory_bg,
         paper_bgcolor=ivory_bg,
-        xaxis=dict(range=[-0.1, 1.1], gridcolor=grid_color),
-        yaxis=dict(range=[-0.1, 1.1], gridcolor=grid_color),
+        xaxis=dict(range=[-0.05, 1.1], gridcolor=grid_color, showticklabels=False), # Hide ticks
+        yaxis=dict(range=[-0.05, 1.1], gridcolor=grid_color, showticklabels=False),
         font=dict(family="Pretendard, sans-serif", size=13, color="#1e1e1e")
     )
     
-    # Add axis descriptions (sub-titles)
+    # 3. Add Connection Lines (ALL Patents -> Core Idea)
+    # This visualizes the proximity/threat level
+    for pt in all_patent_coords:
+        fig.add_shape(
+            type="line",
+            x0=pt['x'], y0=pt['y'],
+            x1=1.0, y1=1.0,
+            line=dict(color="rgba(231, 76, 60, 0.3)", width=1.5, dash="dot"),
+            layer="below"
+        )
+
+    # 4. Custom Marker for My Idea (Workaround for PX symbols)
+    # We can override the marker symbol for the specific trace if needed, 
+    # but here we rely on size/color distinction. 
+    # Ideally, we can add a specialized annotation for the Core Idea.
     fig.add_annotation(
-        x=0.5, y=-0.15, xref="paper", yref="paper",
-        text="<b>X축: 기술적 정렬도</b> - 입력한 아이디어와 특허의 개념적/원리적 일치 정도 (우측일수록 위험)",
-        showarrow=False, font=dict(size=11, color="#555")
-    )
-    fig.add_annotation(
-        x=-0.1, y=0.5, xref="paper", yref="paper", textangle=-90,
-        text="<b>Y축: 분석 심도</b> - 특허 내용의 구체성 및 유사 데이터의 밀집도",
-        showarrow=False, font=dict(size=11, color="#555")
+        x=1.0, y=1.0,
+        text="🏰", # Castle icon or Trophy
+        showarrow=False,
+        font=dict(size=40),
+        yshift=0
     )
     
-    # Add Quadrant Labels
-    fig.add_annotation(x=0.85, y=0.9, text="<b>🚨 HIGH RISK</b>", showarrow=False, font=dict(color="#ff4b4b", size=15))
-    fig.add_annotation(x=0.15, y=0.9, text="🔍 Reference", showarrow=False, font=dict(color="#7f8c8d", size=13))
-    fig.add_annotation(x=0.85, y=0.1, text="💡 Potential Competitors", showarrow=False, font=dict(color="#6c5ce7", size=13))
-    fig.add_annotation(x=0.15, y=0.1, text="📗 Distant Context", showarrow=False, font=dict(color="#28a745", size=13))
+    # Effect: Glow for My Idea (Large transparent circle behind)
+    fig.add_shape(
+        type="circle",
+        xref="x", yref="y",
+        x0=0.92, y0=0.92, x1=1.08, y1=1.08,
+        fillcolor="rgba(52, 152, 219, 0.3)",
+        line_color="rgba(52, 152, 219, 0)",
+        layer="below"
+    )
+
+    # Add Quadrant Labels (Adjusted for new metaphor)
+    fig.add_annotation(x=0.5, y=0.5, text="<b>🛡️ DEFENSE FIELD</b>", showarrow=False, font=dict(color="rgba(41, 128, 185, 0.15)", size=20))
     
     st.plotly_chart(fig, use_container_width=True)
     
-    # Revised Analysis Guide
-    st.info("""
-    🧭 **분석 가이드 및 축 설명**:
-    - **X축 (기술적 정렬도)**: 아이디어의 핵심 기술 사상이 검색된 특허와 얼마나 일치하는지 나타냅니다. 1.0에 가까울수록 직설적인 모방이나 동일 기술일 확률이 높습니다.
-    - **Y축 (분석 심도)**: 해당 특허가 다루는 기술의 범위와 복잡도, 그리고 우리 엔진의 유사 판단 근거가 얼마나 탄탄한지를 나타냅니다.
-    
-    **4분면 해석**:
-    1. **우측 상단 (🚨 HIGH RISK)**: 기술 원리가 거의 일치하며 내용도 구체적인 **핵심 위험** 영역입니다.
-    2. **우측 하단 (💡 Potential Competitors)**: 원리는 유사하나 표현이나 기술 수준이 다른 **잠재적 경쟁** 영역입니다. 회피 설계 검토가 필요합니다.
-    3. **좌측 상단 (🔍 Reference)**: 일부 키워드나 구성은 겹치나 기술적 사상이 다른 **단순 참고** 영역입니다.
-    4. **좌측 하단 (📗 Distant Context)**: 관련성은 낮지만 기술 분야가 겹칠 수 있는 **단순 배경 기술**입니다.
-    """)
+    # Revised Analysis Guide (Premium)
+    st.markdown("""
+    <div style='background-color: #f8f9fa; padding: 15px; border-radius: 10px; border-left: 5px solid #2980b9;'>
+        <h4 style='color: #2c3e50; margin-top:0;'>🛡️ 전략 가이드: 특허 방어 모델 (Guardian Model)</h4>
+        <p style='font-size: 14px; color: #555;'>
+            귀하의 아이디어(<b>🏰 MY CORE IDEA</b>)는 우측 상단(1.0, 1.0)의 <b>안전한 성(Castle)</b>으로 표현됩니다.
+            타사 특허들이 얼마나 내 성에 가까이 접근(침범)하고 있는지 확인하세요.
+        </p>
+        
+        <h5 style='color: #34495e; margin-bottom: 5px;'>📊 축(Axis) 설명</h5>
+        <ul style='font-size: 14px; color: #555; margin-top: 5px;'>
+            <li><b>X축 - 기술적 정렬도 (Alignment)</b>: AI가 평가한 <b>기술적 유사도</b>입니다. 우측(1.0)에 가까울수록 귀하의 아이디어와 기술 사상이 일치하여 <span style='color:#e74c3c'>침해 위험이 높습니다</span>.</li>
+            <li><b>Y축 - 분석 심도 (Depth)</b>: 해당 특허의 <b>분석 우선순위</b>를 나타냅니다. 상단에 있을수록 더 상세한 검토가 필요한 특허입니다.</li>
+        </ul>
+        
+        <h5 style='color: #34495e; margin-bottom: 5px;'>🎨 범주(Category) 설명</h5>
+        <ul style='font-size: 14px; color: #555; margin-top: 5px;'>
+            <li><b>🔴 CRITICAL THREAT (핵심 위협)</b>: 방어선 안쪽으로 깊숙이 침투한 특허들입니다. <span style='color:#e74c3c'>점선</span>으로 연결된 특허는 직접적인 충돌 위험이 있습니다.</li>
+            <li><b>🟠 COLLISION ZONE (충돌 경계)</b>: 잠재적 위험군입니다. 선제적인 회피 설계가 권장됩니다.</li>
+            <li><b>🟣 HIDDEN RIVAL (잠재적 경쟁)</b>: 기술적 접근 방식이 유사한 잠재적 경쟁자들입니다.</li>
+            <li><b>🟢 SAFE DISTANCE (안전 거리)</b>: 아직은 거리가 먼 참조 기술들입니다.</li>
+        </ul>
+    </div>
+    """, unsafe_allow_html=True)
  

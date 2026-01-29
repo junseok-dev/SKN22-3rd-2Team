@@ -27,11 +27,8 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-try:
-    import faiss
-    FAISS_AVAILABLE = True
-except ImportError:
-    FAISS_AVAILABLE = False
+# FAISS is imported lazily in FaissClient to avoid unnecessary overhead/logs
+FAISS_AVAILABLE = False
 
 try:
     from rank_bm25 import BM25Okapi
@@ -239,6 +236,13 @@ class FaissClient:
         faiss_config: FaissConfig = None,
         embedding_dim: int = None,
     ):
+        global faiss
+        try:
+            import faiss
+            FAISS_AVAILABLE = True
+        except ImportError:
+            FAISS_AVAILABLE = False
+            
         if not FAISS_AVAILABLE:
             raise ImportError("faiss-cpu is required. Install with: pip install faiss-cpu")
         

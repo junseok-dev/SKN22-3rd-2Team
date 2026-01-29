@@ -33,9 +33,9 @@ pydantic>=2.6.0
 tiktoken>=0.5.0          # 토큰 카운팅
 
 # =============================================================================
-# Vector Database - FAISS CPU (In-Memory)
+# Vector Database - FAISS CPU (Legacy/Optional)
 # =============================================================================
-faiss-cpu>=1.7.4
+# faiss-cpu>=1.7.4  # Removed in favor of Pinecone
 
 # =============================================================================
 # Hybrid Search - BM25 (Sparse Retrieval)
