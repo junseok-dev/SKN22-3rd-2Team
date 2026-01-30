@@ -17,9 +17,10 @@
 | **Self-RAG** | 검색 결과의 관련성을 평가(Grading)하고 필요 시 쿼리를 재작성(Rewrite)하여 재검색하는 지능형 루프 |
 | **HyDE** | 사용자 아이디어로부터 '가상 청구항'을 생성하여 검색의 정확도(특히 재현율)를 향상 |
 | **Multi-Query** | 아이디어를 기술적 관점, 청구항 관점, 문제해결 관점 등 다각도로 확장하여 검색 |
-| **Hybrid Search** | **Pinecone Serverless** (Dense + Sparse) Unified Index (No Local DB) |
+| **Hybrid Search** | **Pinecone** (Dense) + **Local BM25** (Sparse) + RRF Fusion |
 | **Reranker** | Cross-Encoder 모델(`ms-marco-MiniLM`)을 사용하여 검색 결과의 순위를 정밀하게 재조정 |
 | **LLM Streaming** | 분석 과정을 실시간으로 스트리밍하여 사용자의 체감 대기 시간을 최소화 |
+| **Guardian Map** | 아이디어를 성(Castle)으로, 위협 특허를 침입자로 시각화한 **직관적 방어 전략 지도** |
 
 ---
 
@@ -30,28 +31,36 @@
 ```mermaid
 graph TD
     User[사용자 입력] --> UI[Streamlit App (app.py)]
-    UI --> Logic[Analysis Logic (analysis_logic.py)]
+    UI --> Logic[Analysis Logic]
     
-    subgraph "Patent Agent (Self-RAG)"
+    subgraph "Patent Agent Pipeline"
         Logic --> Agent[PatentAgent]
         Agent --> HyDE[HyDE: 가상 청구항 생성]
         HyDE --> MultiQuery[Multi-Query 생성]
         MultiQuery --> Search[Hybrid Search]
         
         Search --> Dense[Pinecone (Dense Vector)]
-        Search --> Sparse[Pinecone (Sparse Vector)]
+        Search --> Sparse[Local BM25 (Sparse Index)]
         
-        Dense & Sparse --> Mixed[Weighted Sum Scoring]
+        Dense & Sparse --> Mixed[RRF Fusion]
         Mixed --> Rerank[Cross-Encoder Reranker]
         
         Rerank --> Grade{Grading (관련성 평가)}
-        Grade -- "Low Score (<0.6)" --> Rewrite[Query Rewrite]
+        Grade -- "Low Score" --> Rewrite[Query Rewrite]
         Rewrite --> Search
         Grade -- "High Score" --> Analysis[Critical CoT Analysis]
     end
     
     Analysis --> Stream[Streaming Output]
-    Stream --> UI
+    Stream --> Visual[Guardian Map]
+    Stream --> PDF[PDF Report]
+    Visual & PDF --> UI
+    
+    subgraph "Offline Pipeline"
+        Raw[BigQuery] --> Pre[4-Level Parser]
+        Pre --> Train[Self-RAG Gen]
+        Pre --> Index[Pinecone/BM25 Indexing]
+    end
 ```
 
 ---
@@ -64,11 +73,11 @@ graph TD
 - **Search Loop**: 초기 검색 결과가 만족스럽지 않을 경우(Grading 점수 미달), 검색 쿼리를 스스로 수정하여 재검색을 수행합니다.
 - **Critical Analysis**: `gpt-4o`를 사용하여 검색된 특허와 사용자 아이디어를 '청구항 단위'로 정밀 비교 분석합니다. (유사도, 침해 리스크, 회피 전략)
 
-### 3.2 Hybrid Search & Reranker
+### 3.2 Hybrid Search & Reranker (`src/vector_db.py`)
 검색의 재현율(Recall)과 정밀도(Precision)를 모두 잡기 위한 전략입니다.
 - **Dense Search (Pinecone)**: 문맥적 의미 유사성을 기반으로 검색합니다. (Model: `text-embedding-3-small`)
-- **Sparse Search (BM25)**: 키워드 매칭(TF-IDF 변형)을 기반으로 검색합니다. (전문 용어 검색에 강점)
-- **RRF Fusion**: 두 검색 결과의 순위를 상호보완적으로 결합합니다.
+- **Sparse Search (BM25)**: 키워드 매칭(TF-IDF 변형)을 기반으로 검색합니다. (`rank_bm25` 라이브러리 활용 로컬 인덱싱)
+- **RRF Fusion**: 두 검색 결과의 순위를 상호보완적으로 결합합니다. (Reciprocal Rank Fusion)
 - **Reranker**: `Cross-Encoder`를 사용하여 상위 결과들의 문맥적 연관성을 다시 한 번 정밀하게 채점하여 최종 순위를 결정합니다.
 
 ---
@@ -78,26 +87,31 @@ graph TD
 ### 4.1 Vector Database (Pinecone)
 - **Type**: Serverless Index (AWS/GCP)
 - **Dimension**: 1536 (OpenAI Embedding)
-- **Metric**: DotProduct (Required for Sparse-Dense Hybrid)
-- **Metadata**: 특허 번호, 제목, 초록, 청구항, IPC 코드 등 저장 (Unified Storage)
+- **Role**: Dense Vector 저장 및 고속 유사도 검색
 
-### 4.2 Sparse Encoder
-- **Library**: `pinecone-text`
-- **Role**: 텍스트를 Sparse Vector로 변환 (Stateless Client-side logic)
-- **Config**: `data/index/bm25_params.json` (Lightweight Params)
-- **Note**: 기존 `rank_bm25` 로컬 인덱스 파일(.pkl)은 완전히 제거됨.
+### 4.2 Sparse Search Engine (Local)
+- **Library**: `rank_bm25` (In-memory / Local Cache)
+- **Role**: 정확한 키워드 매칭 (특허 번호, 전문 용어 등)
+- **Storage**: `data/index/patent_index_bm25.pkl`
+- **Why Local?**: Pinecone Serverless의 Sparse 지원 제약 및 비용 최적화를 위해 검증된 BM25 알고리즘을 로컬에서 수행
 
 ---
 
-## 5. 분석 프로세스 (Logic Flow)
+## 5. 학습 데이터 생성 (Self-RAG Pipeline)
+`src/self_rag_generator.py`를 통해 RAG 성능 향상을 위한 고품질 데이터셋을 생성합니다.
+- **Auto-Critique**: GPT-4o가 특허 전문가가 되어 Anchor-Cited 특허 쌍을 분석하고 정답(Ground Truth)을 생성합니다.
+
+---
+
+## 6. 분석 프로세스 (Logic Flow)
 
 1. **User Input**: 사용자가 아이디어를 입력합니다.
 2. **HyDE**: "이 아이디어가 특허로 출원된다면 어떤 청구항일까?"를 상상하여 가상 문서를 생성합니다.
-3. **Retrieval**: 가상 문서와 원본 아이디어를 바탕으로 3가지 관점의 쿼리를 생성하고, Hybrid Search를 수행합니다.
+3. **Retrieval**: 가상 문서와 원본 아이디어를 바탕으로 3가지 관점의 쿼리를 생성하고, Hybrid Search(Pinecone + BM25)를 수행합니다.
 4. **Reranking**: 검색된 후보군 중 상위 문서들을 정밀 모델로 재정렬합니다.
 5. **Grading**: 상위 5개 문서가 실제로 관련이 있는지 LLM이 채점합니다. (관련성이 낮으면 쿼리 수정 후 3번으로 복귀)
 6. **Analysis**: 최종 선정된 특허들과 아이디어를 비교하여 유사도, 기술적 차이점, 침해 가능성 등을 심층 분석합니다.
-7. **Streaming**: 분석되는 내용을 실시간으로 화면에 출력합니다.
+7. **Visualization**: **Guardian Map** 및 **PDF 리포트**를 생성하여 사용자에게 제공합니다.
 
 
 *작성: Team 뀨💕*
