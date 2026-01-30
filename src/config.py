@@ -163,27 +163,6 @@ class EmbeddingConfig:
     description_weight: float = 1.0  # Base weight for descriptions
 
 
-# =============================================================================
-# FAISS Vector Database Configuration
-# =============================================================================
-
-@dataclass
-class FaissConfig:
-    """FAISS in-memory vector database configuration."""
-    
-    # Index file paths
-    index_path: Path = field(default_factory=lambda: INDEX_DIR / "patent_index.bin")
-    metadata_path: Path = field(default_factory=lambda: INDEX_DIR / "patent_metadata.pkl")
-    
-    # Index type
-    index_type: str = "Flat"
-    
-    # Search configuration
-    top_k_default: int = 10
-    
-    # For IVF indexes (not used with Flat)
-    nlist: int = 100  # Number of clusters
-    nprobe: int = 10  # Number of clusters to search
 
 
 # =============================================================================
@@ -327,7 +306,7 @@ class PatentGuardConfig:
     bigquery: BigQueryConfig = field(default_factory=BigQueryConfig)
     domain: DomainConfig = field(default_factory=DomainConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
-    faiss: FaissConfig = field(default_factory=FaissConfig)
+
     pinecone: PineconeConfig = field(default_factory=PineconeConfig)
     painet: PAINETConfig = field(default_factory=PAINETConfig)
     self_rag: SelfRAGConfig = field(default_factory=SelfRAGConfig)
@@ -359,11 +338,6 @@ def update_config_from_env() -> PatentGuardConfig:
         config.embedding.api_key = os.environ["OPENAI_API_KEY"]
         config.self_rag.openai_api_key = os.environ["OPENAI_API_KEY"]
     
-    # FAISS paths
-    if os.environ.get("FAISS_INDEX_PATH"):
-        config.faiss.index_path = Path(os.environ["FAISS_INDEX_PATH"])
-    if os.environ.get("FAISS_METADATA_PATH"):
-        config.faiss.metadata_path = Path(os.environ["FAISS_METADATA_PATH"])
     
     return config
 

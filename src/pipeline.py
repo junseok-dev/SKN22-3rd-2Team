@@ -1,14 +1,14 @@
 """
 Short-Cut - Main Pipeline Orchestrator (Antigravity Edition)
 =====================================================================
-Orchestrates the complete patent data pipeline with FAISS indexing.
+Orchestrates the complete patent data pipeline.
 
 Pipeline stages:
 1. BigQuery extraction
 2. Preprocessing & chunking
 3. PAI-NET triplet generation (optional)
 4. Embedding generation (OpenAI API)
-5. FAISS index building (Pre-computation)
+5. Pinecone Vector Indexing (Serverless)
 6. Self-RAG training data generation (optional)
 
 Author: Team 뀨💕
@@ -476,8 +476,7 @@ async def run_full_pipeline(
             print(f"   Triplets: {triplets_path}")
         if embeddings_path:
             print(f"   Embeddings: {embeddings_path}")
-        if config.faiss.index_path.exists():
-            print(f"   FAISS Index: {config.faiss.index_path}")
+
         if selfrag_path:
             print(f"   Self-RAG: {selfrag_path}")
         

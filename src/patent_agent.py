@@ -173,7 +173,7 @@ class PatentAgent:
     Self-RAG Patent Analysis Agent (v3.0).
     
     Features:
-    - FAISS + BM25 hybrid search with RRF fusion
+    - Pinecone Serverless Hybrid Search (Dense + Sparse)
     - OpenAI API for embeddings and LLM
     - Streaming response for real-time analysis
     

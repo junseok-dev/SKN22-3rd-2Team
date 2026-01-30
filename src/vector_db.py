@@ -1,13 +1,13 @@
 """
-Short-Cut v3.0 - FAISS + BM25 Hybrid Vector Database
+Short-Cut v3.0 - Pinecone Serverless Vector Database
 ========================================================
-In-memory vector database with Hybrid Search (RRF Fusion).
+Vector database interface for Pinecone with Hybrid Search.
 
 Features:
-- FAISS IndexFlatIP for dense vector search
-- BM25 for sparse keyword search
-- RRF (Reciprocal Rank Fusion) for result merging
-- Zero-latency startup with pre-computed index
+- Pinecone Serverless for Dense + Sparse search
+- Client-side Sparse Encoding (pinecone-text)
+- RRF (Reciprocal Rank Fusion) support
+- Batch upsert optimization
 
 Author: Team 뀨💕
 License: MIT
@@ -27,15 +27,6 @@ from pathlib import Path
 import numpy as np
 from tqdm import tqdm
 
-# FAISS is imported lazily in FaissClient to avoid unnecessary overhead/logs
-FAISS_AVAILABLE = False
-
-try:
-    from rank_bm25 import BM25Okapi
-    BM25_AVAILABLE = True
-except ImportError:
-    BM25_AVAILABLE = False
-
 try:
     from pinecone import Pinecone, ServerlessSpec
     PINECONE_AVAILABLE = True
@@ -43,7 +34,7 @@ try:
 except ImportError:
     PINECONE_AVAILABLE = False
 
-from src.config import config, FaissConfig, PineconeConfig, EMBEDDINGS_DIR, INDEX_DIR
+from src.config import config, PineconeConfig, EMBEDDINGS_DIR, INDEX_DIR
 
 
 # =============================================================================
@@ -160,435 +151,6 @@ def compute_rrf(
 
 
 
-# =============================================================================
-# BM25 Search Engine
-# =============================================================================
-
-class BM25SearchEngine:
-    """
-    BM25-based sparse keyword search.
-    
-    Used in combination with FAISS for hybrid search.
-    """
-    
-    def __init__(self):
-        self.bm25 = None
-        self.corpus = []
-        self.chunk_ids = []
-        self.metadata_list = []
-        self._initialized = False
-    
-    def build_index(
-        self,
-        documents: List[Dict[str, Any]],
-        text_key: str = "content",
-        id_key: str = "chunk_id",
-    ) -> None:
-        """
-        Build BM25 index from documents.
-        
-        Args:
-            documents: List of document dicts
-            text_key: Key for text content
-            id_key: Key for document ID
-        """
-        if not BM25_AVAILABLE:
-            logger.warning("rank_bm25 not available. Install with: pip install rank_bm25")
-            return
-        
-        self.corpus = []
-        self.chunk_ids = []
-        self.metadata_list = []
-        
-        for doc in documents:
-            text = doc.get(text_key, "")
-            # Tokenize: lowercase and split
-            tokens = self._tokenize(text)
-            self.corpus.append(tokens)
-            self.chunk_ids.append(doc.get(id_key, ""))
-            self.metadata_list.append(doc)
-        
-        self.bm25 = BM25Okapi(self.corpus)
-        self._initialized = True
-        
-        logger.info(f"Built BM25 index for {len(self.corpus)} documents")
-    
-    def search(
-        self,
-        query: str,
-        top_k: int = 10,
-    ) -> List[Tuple[str, float, Dict[str, Any]]]:
-        """
-        Search using BM25.
-        
-        Returns:
-            List of (chunk_id, score, metadata) tuples
-        """
-        if not self._initialized or self.bm25 is None:
-            logger.warning("BM25 index not initialized")
-            return []
-        
-        query_tokens = self._tokenize(query)
-        scores = self.bm25.get_scores(query_tokens)
-        
-        # Get top-k indices
-        top_indices = np.argsort(scores)[::-1][:top_k]
-        
-        results = []
-        for idx in top_indices:
-            if scores[idx] > 0:
-                results.append((
-                    self.chunk_ids[idx],
-                    float(scores[idx]),
-                    self.metadata_list[idx],
-                ))
-        
-        return results
-    
-    def _tokenize(self, text: str) -> List[str]:
-        """Simple tokenization: lowercase, split, filter."""
-        if not text:
-            return []
-        
-        # Lowercase and split
-        tokens = text.lower().split()
-        
-        # Remove very short tokens and punctuation-only tokens
-        tokens = [t for t in tokens if len(t) > 2 and re.search(r'[a-z0-9]', t)]
-        
-        return tokens
-    
-    def save_local(self, path: Path) -> None:
-        """Save BM25 index to disk."""
-        data = {
-            "corpus": self.corpus,
-            "chunk_ids": self.chunk_ids,
-            "metadata_list": self.metadata_list,
-        }
-        with open(path, 'wb') as f:
-            pickle.dump(data, f)
-        logger.info(f"Saved BM25 index to {path}")
-    
-    def load_local(self, path: Path) -> bool:
-        """Load BM25 index from disk."""
-        if not path.exists():
-            return False
-        
-        try:
-            with open(path, 'rb') as f:
-                data = pickle.load(f)
-            
-            self.corpus = data["corpus"]
-            self.chunk_ids = data["chunk_ids"]
-            self.metadata_list = data["metadata_list"]
-            
-            if BM25_AVAILABLE:
-                self.bm25 = BM25Okapi(self.corpus)
-                self._initialized = True
-                logger.info(f"Loaded BM25 index from {path} ({len(self.corpus)} docs)")
-                return True
-            else:
-                logger.warning("rank_bm25 not available")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Failed to load BM25 index: {e}")
-            return False
-
-
-# =============================================================================
-# FAISS Client with Hybrid Search
-# =============================================================================
-
-class FaissClient:
-    """
-    FAISS-based in-memory vector database with Hybrid Search.
-    
-    Features:
-    - Dense search using FAISS IndexFlatIP
-    - Sparse search using BM25
-    - RRF (Reciprocal Rank Fusion) for combining results
-    """
-    
-    def __init__(
-        self,
-        faiss_config: FaissConfig = None,
-        embedding_dim: int = None,
-    ):
-        global faiss
-        try:
-            import faiss
-            FAISS_AVAILABLE = True
-        except ImportError:
-            FAISS_AVAILABLE = False
-            
-        if not FAISS_AVAILABLE:
-            raise ImportError("faiss-cpu is required. Install with: pip install faiss-cpu")
-        
-        self.config = faiss_config or config.faiss
-        self.embedding_dim = embedding_dim or config.embedding.embedding_dim
-        
-        # FAISS index
-        self.index = None
-        self.metadata: Dict[int, Dict[str, Any]] = {}
-        self.id_to_idx: Dict[str, int] = {}
-        self._loaded = False
-        
-        # BM25 engine for hybrid search
-        self.bm25_engine = BM25SearchEngine()
-        self.bm25_path = self.config.index_path.parent / "bm25_index.pkl"
-        
-        logger.info(f"FAISS Client initialized (dim={self.embedding_dim})")
-    
-    def create_index(self, use_cosine: bool = True) -> None:
-        """
-        Create a new FAISS index.
-        """
-        if use_cosine:
-            self.index = faiss.IndexFlatIP(self.embedding_dim)
-            logger.info(f"Created IndexFlatIP (cosine similarity) with dim={self.embedding_dim}")
-        else:
-            self.index = faiss.IndexFlatL2(self.embedding_dim)
-            logger.info(f"Created IndexFlatL2 with dim={self.embedding_dim}")
-        
-        self.metadata = {}
-        self.id_to_idx = {}
-        self._loaded = True
-    
-    def add_vectors(
-        self,
-        embeddings: np.ndarray,
-        metadata_list: List[Dict[str, Any]],
-        normalize: bool = True,
-    ) -> int:
-        """
-        Add vectors to the index with metadata.
-        Also builds BM25 index for hybrid search.
-        """
-        if self.index is None:
-            self.create_index()
-        
-        embeddings = embeddings.astype(np.float32)
-        
-        if normalize:
-            faiss.normalize_L2(embeddings)
-        
-        start_idx = self.index.ntotal
-        self.index.add(embeddings)
-        
-        for i, meta in enumerate(metadata_list):
-            idx = start_idx + i
-            self.metadata[idx] = meta
-            chunk_id = meta.get("chunk_id", f"chunk_{idx}")
-            self.id_to_idx[chunk_id] = idx
-        
-        # Build BM25 index for hybrid search
-        self.bm25_engine.build_index(metadata_list, text_key="content", id_key="chunk_id")
-        
-        logger.info(f"Added {len(embeddings)} vectors to index (total: {self.index.ntotal})")
-        
-        return len(embeddings)
-    
-    def search(
-        self,
-        query_embedding: np.ndarray,
-        top_k: int = 10,
-        normalize: bool = True,
-    ) -> List[SearchResult]:
-        """
-        Search for similar vectors (dense search only).
-        """
-        if self.index is None or self.index.ntotal == 0:
-            return []
-        
-        if query_embedding.ndim == 1:
-            query_embedding = query_embedding.reshape(1, -1)
-        
-        query_embedding = query_embedding.astype(np.float32)
-        
-        if normalize:
-            faiss.normalize_L2(query_embedding)
-        
-        scores, indices = self.index.search(query_embedding, min(top_k, self.index.ntotal))
-        
-        results = []
-        for score, idx in zip(scores[0], indices[0]):
-            if idx < 0:
-                continue
-            
-            meta = self.metadata.get(int(idx), {})
-            
-            results.append(SearchResult(
-                chunk_id=meta.get("chunk_id", f"chunk_{idx}"),
-                patent_id=meta.get("patent_id", ""),
-                score=float(score),
-                content=meta.get("content", ""),
-                content_type=meta.get("content_type", ""),
-                dense_score=float(score),
-                metadata={
-                    "ipc_code": meta.get("ipc_code", ""),
-                    "importance_score": meta.get("importance_score", 0.0),
-                    "weight": meta.get("weight", 1.0),
-                    "title": meta.get("title", ""),
-                    "abstract": meta.get("abstract", ""),
-                    "claims": meta.get("claims", ""),
-                },
-            ))
-        
-        return results
-    
-    def hybrid_search(
-        self,
-        query_embedding: np.ndarray,
-        query_text: str,
-        top_k: int = 10,
-        dense_weight: float = 0.5,
-        sparse_weight: float = 0.5,
-        rrf_k: int = 60,
-        normalize: bool = True,
-    ) -> List[SearchResult]:
-        """
-        Hybrid search combining dense (FAISS) and sparse (BM25) results using RRF.
-        
-        Args:
-            query_embedding: Dense query vector
-            query_text: Original query text for BM25
-            top_k: Number of results to return
-            dense_weight: Weight for dense search in RRF
-            sparse_weight: Weight for sparse search in RRF
-            rrf_k: RRF constant (default 60)
-            normalize: Normalize query embedding
-            
-        Returns:
-            List of SearchResult objects sorted by RRF score
-        """
-        # Dense search
-        dense_results = self.search(query_embedding, top_k=top_k * 2, normalize=normalize)
-        
-        # Sparse search
-        sparse_raw = self.bm25_engine.search(query_text, top_k=top_k * 2)
-        
-        # RRF Fusion
-        final_results = compute_rrf(
-            dense_results=dense_results,
-            sparse_results=sparse_raw,
-            dense_weight=dense_weight,
-            sparse_weight=sparse_weight,
-            rrf_k=rrf_k,
-            top_k=top_k
-        )
-        
-        logger.info(f"Hybrid search: {len(dense_results)} dense + {len(sparse_raw)} sparse -> {len(final_results)} fused")
-        
-        return final_results
-    
-    async def async_search(
-        self,
-        query_embedding: np.ndarray,
-        top_k: int = 10,
-        normalize: bool = True,
-    ) -> List[SearchResult]:
-        """Async wrapper for dense search."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: self.search(query_embedding, top_k, normalize)
-        )
-    
-    async def async_hybrid_search(
-        self,
-        query_embedding: np.ndarray,
-        query_text: str,
-        top_k: int = 10,
-        dense_weight: float = 0.5,
-        sparse_weight: float = 0.5,
-    ) -> List[SearchResult]:
-        """Async wrapper for hybrid search."""
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(
-            None,
-            lambda: self.hybrid_search(
-                query_embedding, query_text, top_k, dense_weight, sparse_weight
-            )
-        )
-    
-    def save_local(self, index_path: Path = None, metadata_path: Path = None) -> None:
-        """Save FAISS index, metadata, and BM25 index to disk."""
-        index_path = index_path or self.config.index_path
-        metadata_path = metadata_path or self.config.metadata_path
-        
-        index_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        # Save FAISS index
-        faiss.write_index(self.index, str(index_path))
-        logger.info(f"Saved FAISS index to {index_path} ({self.index.ntotal} vectors)")
-        
-        # Save metadata
-        with open(metadata_path, 'wb') as f:
-            pickle.dump({
-                "metadata": self.metadata,
-                "id_to_idx": self.id_to_idx,
-            }, f)
-        logger.info(f"Saved metadata to {metadata_path}")
-        
-        # Save BM25 index
-        self.bm25_engine.save_local(self.bm25_path)
-    
-    def load_local(self, index_path: Path = None, metadata_path: Path = None) -> bool:
-        """Load FAISS index, metadata, and BM25 index from disk."""
-        index_path = index_path or self.config.index_path
-        metadata_path = metadata_path or self.config.metadata_path
-        
-        if not index_path.exists():
-            logger.warning(f"Index file not found: {index_path}")
-            return False
-        
-        if not metadata_path.exists():
-            logger.warning(f"Metadata file not found: {metadata_path}")
-            return False
-        
-        try:
-            # Load FAISS index
-            self.index = faiss.read_index(str(index_path))
-            logger.info(f"Loaded FAISS index from {index_path} ({self.index.ntotal} vectors)")
-            
-            # Load metadata
-            with open(metadata_path, 'rb') as f:
-                data = pickle.load(f)
-                self.metadata = data.get("metadata", {})
-                self.id_to_idx = data.get("id_to_idx", {})
-            logger.info(f"Loaded metadata from {metadata_path}")
-            
-            # Load BM25 index
-            if self.bm25_path.exists():
-                self.bm25_engine.load_local(self.bm25_path)
-            else:
-                # Rebuild BM25 from metadata
-                docs = list(self.metadata.values())
-                if docs:
-                    self.bm25_engine.build_index(docs, text_key="content", id_key="chunk_id")
-            
-            self._loaded = True
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to load index: {e}")
-            return False
-    
-    def get_stats(self) -> Dict[str, Any]:
-        """Get index statistics."""
-        if self.index is None:
-            return {"initialized": False, "total_vectors": 0}
-        
-        return {
-            "initialized": True,
-            "total_vectors": self.index.ntotal,
-            "embedding_dim": self.embedding_dim,
-            "index_type": type(self.index).__name__,
-            "metadata_count": len(self.metadata),
-            "bm25_initialized": self.bm25_engine._initialized,
-            "bm25_docs": len(self.bm25_engine.corpus) if self.bm25_engine._initialized else 0,
-        }
 
 
 # =============================================================================
@@ -1049,89 +611,6 @@ class KeywordExtractor:
 # High-Level Operations
 # =============================================================================
 
-async def build_index_from_patents(
-    processed_patents: List[Dict[str, Any]],
-    embedder,
-    faiss_client: FaissClient = None,
-    save_to_disk: bool = True,
-) -> InsertResult:
-    """Build FAISS + BM25 hybrid index from processed patents."""
-    if faiss_client is None:
-        faiss_client = FaissClient()
-    
-    logger.info(f"Building hybrid index from {len(processed_patents)} patents...")
-    
-    all_chunks = []
-    for patent in tqdm(processed_patents, desc="Extracting chunks"):
-        patent_metadata = {
-            "patent_id": patent.get("publication_number", ""),
-            "title": patent.get("title", ""),
-            "abstract": patent.get("abstract", ""),
-            "ipc_codes": patent.get("ipc_codes", []),
-            "importance_score": patent.get("importance_score", 0.0),
-        }
-        
-        claims = patent.get("claims", [])
-        claims_text = ""
-        if claims and isinstance(claims[0], dict):
-            claims_text = claims[0].get("claim_text", "")
-        
-        for chunk in patent.get("chunks", []):
-            chunk_data = {
-                "chunk_id": chunk.get("chunk_id", ""),
-                "patent_id": patent_metadata["patent_id"],
-                "content": chunk.get("content", ""),
-                "content_type": chunk.get("chunk_type", "description"),
-                "ipc_code": (patent.get("ipc_codes") or [""])[0][:20],
-                "importance_score": patent_metadata["importance_score"],
-                "weight": 1.0,
-                "title": patent_metadata["title"],
-                "abstract": patent_metadata["abstract"][:500] if patent_metadata["abstract"] else "",
-                "claims": claims_text[:1000] if claims_text else "",
-            }
-            all_chunks.append(chunk_data)
-    
-    logger.info(f"Total chunks to index: {len(all_chunks)}")
-    
-    if not all_chunks:
-        return InsertResult(
-            success=False,
-            inserted_count=0,
-            index_path=str(faiss_client.config.index_path),
-            error_message="No chunks to index",
-        )
-    
-    try:
-        # Generate embeddings
-        logger.info("Generating embeddings...")
-        embedding_results = await embedder.embed_patent_chunks(all_chunks)
-        
-        embeddings = np.array([r.embedding for r in embedding_results])
-        
-        for i, result in enumerate(embedding_results):
-            all_chunks[i]["weight"] = result.weight
-        
-        # Create and populate index (FAISS + BM25)
-        faiss_client.create_index(use_cosine=True)
-        faiss_client.add_vectors(embeddings, all_chunks)
-        
-        if save_to_disk:
-            faiss_client.save_local()
-        
-        return InsertResult(
-            success=True,
-            inserted_count=len(all_chunks),
-            index_path=str(faiss_client.config.index_path),
-        )
-        
-    except Exception as e:
-        logger.error(f"Index building failed: {e}")
-        return InsertResult(
-            success=False,
-            inserted_count=0,
-            index_path=str(faiss_client.config.index_path),
-            error_message=str(e),
-        )
 
 
 # =============================================================================
@@ -1139,72 +618,53 @@ async def build_index_from_patents(
 # =============================================================================
 
 async def main():
-    """Test hybrid search operations."""
+    """Test Pinecone Hybrid Search."""
     logging.basicConfig(
         level=logging.INFO,
         format=config.logging.log_format,
     )
     
     print("\n" + "=" * 70)
-    print("⚡ 쇼특허 (Short-Cut) v3.0 - Hybrid Search Test")
+    print("⚡ 쇼특허 (Short-Cut) v3.0 - Pinecone Hybrid Search Test")
     print("=" * 70)
     
-    if not FAISS_AVAILABLE:
-        print("❌ faiss-cpu not installed")
+    if not PINECONE_AVAILABLE:
+        print("❌ pinecone-client not installed.")
         return
-    
-    if not BM25_AVAILABLE:
-        print("❌ rank_bm25 not installed. Install with: pip install rank_bm25")
-        return
-    
+
     # Initialize client
-    client = FaissClient()
-    
-    # Test data
-    print("\n📦 Creating test index...")
-    client.create_index(use_cosine=True)
-    
-    n_vectors = 100
-    dim = config.embedding.embedding_dim
-    test_embeddings = np.random.randn(n_vectors, dim).astype(np.float32)
-    
-    test_metadata = [
-        {
-            "chunk_id": f"test_chunk_{i}",
-            "patent_id": f"US-{1000000 + i}-A",
-            "content": f"Method for neural network based retrieval system using vector embedding and semantic search technology claim {i}",
-            "content_type": "claim" if i % 3 == 0 else "abstract",
-            "ipc_code": "G06N3",
-            "importance_score": float(i % 10),
-            "title": f"Neural Network Retrieval System Patent {i}",
-        }
-        for i in range(n_vectors)
-    ]
-    
-    print(f"📥 Adding {n_vectors} test vectors...")
-    client.add_vectors(test_embeddings, test_metadata)
+    try:
+        client = PineconeClient(skip_init_check=True)
+    except Exception as e:
+        print(f"❌ Failed to init PineconeClient: {e}")
+        return
     
     stats = client.get_stats()
     print(f"📊 Index stats: {stats}")
     
+    if stats.get("total_vectors", 0) == 0:
+        print("ℹ️ Index is empty. Upsert data first using the pipeline.")
+        return
+
     # Test hybrid search
-    print("\n🔍 Testing hybrid search...")
-    query_embedding = test_embeddings[0]
-    query_text = "neural network semantic search retrieval"
+    query_text = "neural network semantic search"
+    # Create random embedding for test
+    query_embedding = np.random.randn(1536).astype(np.float32)
+
+    print(f"\n🔍 Testing hybrid search for: '{query_text}'")
     
-    results = client.hybrid_search(query_embedding, query_text, top_k=5)
+    results = client.hybrid_search(
+        query_embedding=query_embedding, 
+        query_text=query_text, 
+        top_k=5
+    )
     
     print(f"   Found: {len(results)} results")
-    for r in results[:5]:
-        print(f"   - {r.patent_id}: RRF={r.rrf_score:.4f} (dense={r.dense_score:.4f}, sparse={r.sparse_score:.4f})")
-    
-    # Test keyword extraction
-    print("\n🔑 Testing keyword extraction...")
-    keywords = KeywordExtractor.extract(query_text)
-    print(f"   Keywords: {keywords}")
+    for r in results:
+        print(f"   - {r.patent_id}: {r.score:.4f} (IPC: {r.metadata.get('ipc_code', 'N/A')})")
     
     print("\n" + "=" * 70)
-    print("✅ Hybrid search test complete!")
+    print("✅ Test complete!")
     print("=" * 70)
 
 
