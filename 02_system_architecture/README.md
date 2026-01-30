@@ -35,7 +35,7 @@ graph TD
     
     subgraph "Patent Agent Pipeline"
         Logic --> Agent[PatentAgent]
-        Agent --> HyDE[HyDE: 가상 청구항 생성]
+        Agent --> HyDE[HyDE: 가상 청구항 생성]:::highlight
         HyDE --> MultiQuery[Multi-Query 생성]
         MultiQuery --> Search[Hybrid Search]
         
@@ -67,6 +67,9 @@ graph TD
         Pre --> Train[Self-RAG Gen]
         Pre --> Index[Vectors Upsert]
     end
+    
+    classDef highlight fill:#f9f,stroke:#333,stroke-width:2px;
+
 ```
 
 ---
