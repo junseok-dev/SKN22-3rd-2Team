@@ -211,6 +211,9 @@ class PineconeConfig:
     
     # Namespace
     namespace: str = "default"
+    
+    # Metadata path
+    metadata_path: Optional[Path] = None
 
 
 # =============================================================================

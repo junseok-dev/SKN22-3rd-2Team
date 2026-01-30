@@ -1,5 +1,5 @@
 """
-Short-Cut v3.0 - Self-RAG Patent Agent with Hybrid Search & Streaming
+Short-Cut - Self-RAG Patent Agent with Hybrid Search & Streaming
 ==========================================================================
 Advanced RAG pipeline with HyDE, Hybrid Search (RRF), Streaming, and CoT Analysis.
 

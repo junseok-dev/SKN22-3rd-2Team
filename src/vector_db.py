@@ -610,6 +610,7 @@ class PineconeClient:
         self,
         pinecone_config: PineconeConfig = None,
         embedding_dim: int = None,
+        skip_init_check: bool = True,
     ):
         if not PINECONE_AVAILABLE:
             raise ImportError("pinecone is required. Install with: pip install pinecone>=3.0.0")
@@ -623,10 +624,11 @@ class PineconeClient:
             
         self.pc = Pinecone(api_key=self.config.api_key)
         
-        # Check/Create Index
-        self._ensure_index_exists()
-        
         self.index = self.pc.Index(self.config.index_name)
+        
+        # Local metadata cache (Synchronized with FaissClient logic)
+        self.metadata: Dict[str, Dict[str, Any]] = {}
+        self.metadata_path = self.config.metadata_path or INDEX_DIR / "pinecone_metadata.pkl"
         
         # Setup BM25 Encoder (Serverless Hybrid)
         # We need to load fitted parameters if available, otherwise start new
@@ -726,16 +728,22 @@ class PineconeClient:
 
                 flat_meta = {
                     "text": content_text,
-                    "title": (meta.get("title", "") or "")[:1000],
+                    "title": (meta.get("title", "") or "")[:500],
                     "patent_id": meta.get("patent_id", ""),
                     "ipc_code": (meta.get("ipc_codes") or [""])[0] if isinstance(meta.get("ipc_codes"), list) else str(meta.get("ipc_codes", "")),
+                    "abstract": (meta.get("abstract", "") or "")[:1000],
+                    "claims": (meta.get("claims", "") or "")[:2000],
+                    "importance_score": float(meta.get("importance_score", 0.0))
                 }
+                
+                # Store in local metadata cache as well
+                self.metadata[chunk_id] = meta
                 
                 vectors_to_upsert.append({
                     "id": chunk_id,
                     "values": vec.tolist(),
                     "sparse_values": sparse, # Inject Sparse Vector
-                    "metadata": flat_meta
+                    "metadata": {k: v for k, v in flat_meta.items() if v} # Filter out empty values
                 })
             
             try:
@@ -810,8 +818,6 @@ class PineconeClient:
             if len(results) >= top_k:
                 break
                 
-        return results
-            
         return results
 
     def hybrid_search(
@@ -909,24 +915,45 @@ class PineconeClient:
         return await loop.run_in_executor(None, lambda: self.hybrid_search(*args, **kwargs))
 
     def save_local(self) -> None:
-        """Save BM25 parameters."""
+        """Save BM25 parameters and metadata cache."""
+        # Save BM25 Params
         self.bm25_params_path.parent.mkdir(parents=True, exist_ok=True)
         self.bm25_encoder.dump(str(self.bm25_params_path))
         logger.info(f"Saved BM25 params to {self.bm25_params_path}")
+        
+        # Save Metadata Cache
+        with open(self.metadata_path, 'wb') as f:
+            pickle.dump({"metadata": self.metadata}, f)
+        logger.info(f"Saved metadata cache to {self.metadata_path}")
 
     def load_local(self) -> bool:
-        """Load BM25 parameters."""
-        if not self.bm25_params_path.exists():
-            return False
+        """Load BM25 parameters and metadata cache."""
+        success = True
+        
+        # 1. Load BM25
+        if self.bm25_params_path.exists():
+            try:
+                self.bm25_encoder = BM25Encoder().load(str(self.bm25_params_path))
+                logger.info(f"Loaded BM25 params from {self.bm25_params_path}")
+            except Exception as e:
+                logger.error(f"Failed to load BM25 params: {e}")
+                success = False
+        else:
+            success = False
             
-        try:
-            self.bm25_encoder = BM25Encoder().load(str(self.bm25_params_path))
-            logger.info(f"Loaded BM25 params from {self.bm25_params_path}")
-            self._loaded = True
-            return True
-        except Exception as e:
-            logger.error(f"Failed to load BM25 params: {e}")
-            return False
+        # 2. Load Metadata
+        if self.metadata_path.exists():
+            try:
+                with open(self.metadata_path, 'rb') as f:
+                    data = pickle.load(f)
+                    self.metadata = data.get("metadata", {})
+                logger.info(f"Loaded metadata cache from {self.metadata_path} ({len(self.metadata)} items)")
+            except Exception as e:
+                logger.error(f"Failed to load metadata cache: {e}")
+                success = False
+        
+        self._loaded = success
+        return success
 
     def get_stats(self) -> Dict[str, Any]:
         """Get index stats."""
