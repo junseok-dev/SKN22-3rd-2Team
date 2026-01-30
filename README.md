@@ -4,7 +4,6 @@
 
 사용자의 아이디어를 입력하면 기존 특허와 비교하여 **유사도**, **침해 리스크**, **회피 전략**을 분석해주는 RAG 기반 특허 분석 도구입니다.
 
-> **Team 뀨💕** | [기술 제안서](report/v3_technical_proposal.md) | [기술 리포트](report/v3_technical_report.md)
 
 ---
 
@@ -14,7 +13,8 @@
 |------|------|
 | **HyDE** | 사용자 아이디어로부터 '가상 청구항'을 생성하여 검색 재현율(Recall)을 획기적으로 향상 |
 | **Multi-Query RAG** | 기술적/법적/문제해결 관점으로 쿼리를 자동 확장하여 검색 누락 최소화 |
-| **Hybrid Search** | Pinecone (Dense) + Local BM25 (Sparse) + RRF 융합 검색으로 정확도 극대화 |
+| **Hybrid Search** | Pinecone Serverless (Dense + Sparse) 통합 인덱스 검색으로 정확도 극대화 |
+| **RAG Evaluation** | **DeepEval** 프레임워크를 활용한 답변의 충실도(Faithfulness) 및 관련성(Relevancy) 자동 검증 |
 | **Reranker** | Cross-Encoder 모델을 활용하여 검색 결과의 관련성 정밀 재정렬 |
 | **Intelligent Parsing** | Regex → 구조 분석 → NLP → Fallback의 **4-Level 청구항 파싱**으로 비정형 데이터 정복 |
 | **Claim-Level Analysis** | '모든 구성요소 법칙(All Elements Rule)'을 적용한 특허 침해 리스크 정밀 진단 |
@@ -73,9 +73,8 @@ flowchart TD
     A[사용자 아이디어] --> H[HyDE: 가상 청구항 생성]
     H --> B[Multi-Query 확장]
     B --> C{하이브리드 검색}
-    C -->|Dense| D[Pinecone Serverless]
-    C -->|Sparse| E[Local BM25]
-    D & E --> F[RRF Fusion & Reranking]
+    C -->|Dense + Sparse| D[Pinecone Serverless]
+    D --> F[RRF Fusion & Reranking]
     F --> G[LLM: 청구항 정밀 분석]
     G --> I[실시간 스트리밍 Analysis]
     I --> J[Guardian Map 시각화]
