@@ -83,15 +83,24 @@ Dense 검색과 Sparse 검색을 결합하여 검색 정확도를 극대화하�
 
 ### 🚀 전체 파이프라인 실행
 ```bash
-# 데이터 추출부터 인덱싱까지 자동 수행
-python src/pipeline.py --stage 5 --limit 10000
+# 데이터 추출부터 인덱싱까지 자동 수행 (Streamlit용 100건 예시)
+python src/pipeline.py --limit 100 --execute
 ```
 
+> **Note**: `--stage` 옵션을 사용하여 특정 단계만 실행할 수 있습니다. 예를 들어 `--stage 5`는 이전에 처리된 데이터(`processed_*.json`)와 임베딩(`embeddings_*.npz`)이 존재해야 실행됩니다.
+
 ### 🛠 단계별 명령
+
+> **Prerequisites (전제 조건)**:
+> Spacy NLP 모델이 설치되어 있어야 Level 3 파싱이 정상 동작합니다.
+> ```bash
+> python -m spacy download en_core_web_sm
+> ```
+
 1. **BigQuery 추출**: `python src/pipeline.py --stage 1`
 2. **전처리 및 파싱**: `python src/pipeline.py --stage 2`
 3. **임베딩 생성**: `python src/pipeline.py --stage 4`
-4. **인덱싱 구축**: `python src/pipeline.py --stage 5`
+4. **인덱싱 구축**: `python src/pipeline.py --stage 5` (선행 데이터 필요)
 
 ---
 
