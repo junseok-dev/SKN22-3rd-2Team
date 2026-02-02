@@ -1,126 +1,103 @@
-# 🏗️ 시스템 아키텍처
+# 🏗 02. 시스템 아키텍처 (System Architecture)
 
-> **⚡ 쇼특허 (Short-Cut) - AI 특허 선행 기술 조사 시스템**  
-> Team: 뀨💕 | 작성일: 2026-01-30
-
----
-
-## 1. 시스템 개요
-
-### 1.1 목적
-사용자가 특허 출원을 고려하는 아이디어를 입력하면, AI가 기존 특허 데이터베이스를 검색하여 **유사 특허**, **침해 리스크**, **회피 전략**을 제공하는 시스템입니다.
-
-### 1.2 핵심 기술 (v3.0)
-
-| 기술 | 설명 |
-|------|------|
-| **Self-RAG** | 검색 결과의 관련성을 평가(Grading)하고 필요 시 쿼리를 재작성(Rewrite)하여 재검색하는 지능형 루프 |
-| **HyDE** | 사용자 아이디어로부터 '가상 청구항'을 생성하여 검색의 정확도(특히 재현율)를 향상 |
-| **Multi-Query** | 아이디어를 기술적 관점, 청구항 관점, 문제해결 관점 등 다각도로 확장하여 검색 |
-| **Hybrid Search** | **Pinecone Serverless** (Dense + Sparse) Unified Index |
-| **Reranker** | Cross-Encoder 모델(`ms-marco-MiniLM`)을 사용하여 검색 결과의 순위를 정밀하게 재조정 |
-| **LLM Streaming** | 분석 과정을 실시간으로 스트리밍하여 사용자의 체감 대기 시간을 최소화 |
-| **Guardian Map** | 아이디어를 성(Castle)으로, 위협 특허를 침입자로 시각화한 **직관적 방어 전략 지도** |
+본 문서는 쇼특허(Short-Cut)의 전체 시스템 아키텍처, 데이터 흐름, 핵심 컴포넌트 간의 상호작용을 설명합니다.
 
 ---
 
-## 2. 전체 아키텍처 (System Pipeline)
+## 🏛 전체 아키텍처 (High-Level Architecture)
 
-데이터의 흐름과 주요 컴포넌트 간의 상호작용을 나타냅니다.
+시스템은 크게 **데이터 파이프라인(Data Pipeline)**, **검색 엔진(Retrieval Engine)**, **분석 에이전트(Analysis Agent)**, **사용자 인터페이스(User Interface)** 4가지 레이어로 구성됩니다.
 
 ```mermaid
 graph TD
-    User[사용자 입력] --> UI[Streamlit App (app.py)]
-    UI --> Logic[Analysis Logic]
+    User([사용자]) --> UI[Streamlit UI]
+    UI --> Agent[Patent Analysis Agent]
     
-    subgraph "Patent Agent Pipeline"
-        Logic --> Agent[PatentAgent]
-        Agent --> HyDE[HyDE: 가상 청구항 생성]:::highlight
-        HyDE --> MultiQuery[Multi-Query 생성]
-        MultiQuery --> Search[Hybrid Search]
-        
-        Search --> Encoder[Client-side Encoder]
-        Encoder -- "Dense (OpenAI)" --> Pinecone
-        Encoder -- "Sparse (BM25)" --> Pinecone
-        
-        subgraph "Pinecone Serverless"
-            Pinecone --> Dense[Dense Index]
-            Pinecone --> Sparse[Sparse Index]
-            Dense & Sparse --> Mixed[Alpha-Weighted Scoring]
-        end
-        
-        Mixed --> Rerank[Cross-Encoder Reranker]
-        
-        Rerank --> Grade{Grading (관련성 평가)}
-        Grade -- "Low Score" --> Rewrite[Query Rewrite]
-        Rewrite --> Search
-        Grade -- "High Score" --> Analysis[Critical CoT Analysis]
+    subgraph "Analysis Layer (Agent)"
+        Agent --> HyDE[HyDE Generator]
+        Agent --> Grader[Self-Consistency Grader]
+        Agent --> Analyst[CoT Analyst]
     end
     
-    Analysis --> Stream[Streaming Output]
-    Stream --> Visual[Guardian Map]
-    Stream --> PDF[PDF Report]
-    Visual & PDF --> UI
-    
-    subgraph "Offline Pipeline"
-        Raw[BigQuery] --> Pre[4-Level Parser]
-        Pre --> Train[Self-RAG Gen]
-        Pre --> Index[Vectors Upsert]
+    subgraph "Retrieval Layer"
+        HyDE --> HybridSearch[Hybrid Search]
+        HybridSearch --> Pinecone[(Pinecone Vector DB)]
+        HybridSearch --> BM25[(Local BM25 Index)]
+        Pinecone --> Fusion[RRF Fusion]
+        BM25 --> Fusion
+        Fusion --> TopK[Top-K Candidates]
     end
     
-    classDef highlight fill:#f9f,stroke:#333,stroke-width:2px;
-
+    subgraph "Data Pipeline Layer"
+        BigQuery[(Google BigQuery)] --> Preprocessor[Preprocessor & Chunker]
+        Preprocessor --> Embedder[OpenAI Embedder]
+        Embedder --> Pinecone
+        Preprocessor --> BM25
+    end
 ```
 
 ---
 
-## 3. 핵심 컴포넌트 상세
+## 🔧 핵심 컴포넌트 상세
 
-### 3.1 Patent Agent (`src/patent_agent.py`)
-시스템의 두뇌 역할을 하는 에이전트 클래스입니다.
-- **HyDE (Hypothetical Document Embedding)**: `gpt-4o-mini`를 사용하여 아이디어를 특허 청구항 스타일로 변환합니다.
-- **Search Loop**: 초기 검색 결과가 만족스럽지 않을 경우(Grading 점수 미달), 검색 쿼리를 스스로 수정하여 재검색을 수행합니다.
-- **Critical Analysis**: `gpt-4o`를 사용하여 검색된 특허와 사용자 아이디어를 '청구항 단위'로 정밀 비교 분석합니다. (유사도, 침해 리스크, 회피 전략)
+### 1. 검색 엔진 (Retrieval Engine) - Hybrid Search Strategy
 
-### 3.2 Hybrid Search & Reranker (`src/vector_db.py`)
-검색의 재현율(Recall)과 정밀도(Precision)를 모두 잡기 위한 전략입니다.
-- **Dense Search (Pinecone)**: 문맥적 의미 유사성을 기반으로 검색합니다. (Model: `text-embedding-3-small`)
-- **Sparse Search (Pinecone)**: 키워드 매칭(BM25)을 기반으로 검색합니다. (`pinecone-text` 라이브러리를 통해 쿼리를 Sparse Vector로 변환 후 전송)
-- **Hybrid Fusion**: Dense 점수와 Sparse 점수를 가중치 합(Alpha-Weighted Sum)으로 결합하여 1차 랭킹을 산출합니다.
-- **Reranker**: `Cross-Encoder`를 사용하여 상위 결과들의 문맥적 연관성을 다시 한 번 정밀하게 채점하여 최종 순위를 결정합니다.
+단순한 의미 기반 검색(Semantic Search)의 한계를 극복하기 위해, 키워드 매칭(Sparse)과 의미 매칭(Dense)을 결합했습니다.
 
----
+- **Dense Retrieval**: `text-embedding-3-small` (1536 dim) + Pinecone Serverless (Cosine Similarity)
+- **Sparse Retrieval**: `Pinecone BM25Encoder` (Token matching)
+- **Fusion**: **RRF (Reciprocal Rank Fusion)** 알고리즘을 사용하여 두 검색 결과를 통합 및 재정렬 (Rank Aggregation)
 
-## 4. 데이터베이스 및 인프라
+### 2. 분석 에이전트 (Analysis Agent) - Self-RAG Flow
 
-### 4.1 Vector Database (Pinecone)
-- **Type**: Serverless Index (AWS/GCP)
-- **Model**: Hybrid (Dense + Sparse)
-- **Role**: 모든 벡터 데이터의 통합 저장소. 별도의 로컬 DB 없이 Pinecone 하나로 검색을 완결합니다.
+단순히 검색된 문서를 요약하는 것이 아니라, 스스로 검색 결과를 평가하고 필요시 재검색하는 **Self-RAG (Self-Reflective RAG)** 구조를 채택했습니다.
 
-### 4.2 Sparse Encoder (Client-side)
-- **Library**: `pinecone-text`
-- **Role**: 텍스트를 Pinecone이 이해하는 Sparse Vector(Token ID + Weight)로 변환합니다.
-- **Config**: `data/index/bm25_params.json` (BM25 통계 정보)
-- **Note**: 검색 시 쿼리 인코딩을 위해 사용되며, 실제 인덱싱은 Pinecone 서버에서 관리됩니다.
+1.  **HyDE (Hypothetical Document Embedding)**:
+    *   사용자의 아이디어(추상적)를 바탕으로 "가상의 특허 청구항(구체적)"을 생성하여 검색 쿼리로 사용
+    *   특허 도메인 특유의 어휘 불일치(Vocabulary Mismatch) 문제 해결
+2.  **Self-Grading & Filtering**:
+    *   검색된 특허가 사용자의 아이디어와 실제로 관련이 있는지 LLM이 `0.0~1.0` 점수로 자체 평가
+    *   평가 점수가 낮을 경우, 쿼리를 재작성(Reformulation)하여 재검색 수행 (Interactive Retrieval)
+3.  **Critical CoT Analysis**:
+    *   선별된 특허에 대해 **Chain-of-Thought** 프롬프팅을 적용하여 심층 분석 수행
+    *   `Similarity` → `Infringement Risk` → `Avoidance Strategy` 단계별 추론
 
----
+### 3. 데이터 파이프라인 (Data Pipeline)
 
-## 5. 학습 데이터 생성 (Self-RAG Pipeline)
-`src/self_rag_generator.py`를 통해 RAG 성능 향상을 위한 고품질 데이터셋을 생성합니다.
-- **Auto-Critique**: GPT-4o가 특허 전문가가 되어 Anchor-Cited 특허 쌍을 분석하고 정답(Ground Truth)을 생성합니다.
+Google Patents Public Dataset을 활용하여 실시간에 가까운 최신 특허 데이터를 자동 수집 및 가공합니다.
+
+- **Source**: Google BigQuery (`patents-public-data`)
+- **Preprocessing**: 계층적 청킹(Hierarchical Chunking)으로 문맥 유지 및 정밀 검색 지원
+- **Embedding**: OpenAI Embeddings API 활용
 
 ---
 
-## 6. 분석 프로세스 (Logic Flow)
+## 💾 데이터 흐름 (Data Flow)
 
-1. **User Input**: 사용자가 아이디어를 입력합니다.
-2. **HyDE**: "이 아이디어가 특허로 출원된다면 어떤 청구항일까?"를 상상하여 가상 문서를 생성합니다.
-3. **Retrieval**: 가상 문서와 원본 아이디어를 바탕으로 Dense/Sparse 벡터를 생성하고, Pinecone에 하이브리드 검색을 요청합니다.
-4. **Reranking**: 검색된 후보군 중 상위 문서들을 정밀 모델로 재정렬합니다.
-5. **Grading**: 상위 5개 문서가 실제로 관련이 있는지 LLM이 채점합니다. (관련성이 낮으면 쿼리 수정 후 3번으로 복귀)
-6. **Analysis**: 최종 선정된 특허들과 아이디어를 비교하여 유사도, 기술적 차이점, 침해 가능성 등을 심층 분석합니다.
-7. **Visualization**: **Guardian Map** 및 **PDF 리포트**를 생성하여 사용자에게 제공합니다.
+### 1. 인덱싱 프로세스 (Indexing Flow)
+1.  **Extraction**: BigQuery에서 AI/NLP 도메인 특허 추출 (IPC 필터링)
+2.  **Chunking**: 특허를 Parent(문서 전체) - Child(청구항/초록) 구조로 분할
+3.  **Embedding**: 텍스트를 벡터로 변환 (OpenAI) + 희소 벡터 생성 (BM25)
+4.  **Upsert**: Pinecone Vector DB에 업로드 (Namespace 분리)
 
+### 2. 분석 프로세스 (Inference Flow)
+1.  **User Input**: 사용자 아이디어 입력
+2.  **Query Expansion**: HyDE를 통한 가상 청구항 생성
+3.  **Retrieval**: Dense + Sparse 하이브리드 검색 수행
+4.  **Reranking**: RRF 기반 재정렬 및 상위 K개 추출
+5.  **Grading**: LLM 기반 관련성 평가 (Low score 시 재검색 Loop)
+6.  **Streaming Response**: 분석 결과 실시간 스트리밍 출력
 
-*작성: Team 뀨💕*
+---
+
+## 🛠 기술 스택 (Tech Stack)
+
+| 레이어 | 기술 | 상세 내용 |
+|--------|------|-----------|
+| **LLM** | **OpenAI** | GPT-4o-mini (Reasoning & Generation) |
+| **Embedding** | **OpenAI** | text-embedding-3-small (1536 dim) |
+| **Vector DB** | **Pinecone** | Serverless Index (AWS us-east-1) |
+| **Search Algo** | **Hybrid** | Dense + Sparse (BM25) with RRF |
+| **Data Source** | **BigQuery** | Google Patents Public Data |
+| **Backend** | **Python** | Asyncio, Pydantic, Instructor |
+| **Frontend** | **Streamlit** | Real-time Streaming UI |

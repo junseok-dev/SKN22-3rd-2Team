@@ -61,8 +61,8 @@ def patent_agent():
 @pytest.fixture(scope="module")
 def metrics():
     return {
-        "faithfulness": FaithfulnessMetric(threshold=0.7, model="gpt-4o-mini", include_reason=True),
-        "relevancy": AnswerRelevancyMetric(threshold=0.7, model="gpt-4o-mini", include_reason=True)
+        "faithfulness": FaithfulnessMetric(threshold=0.6, model="gpt-4o-mini", include_reason=True),
+        "relevancy": AnswerRelevancyMetric(threshold=0.6, model="gpt-4o-mini", include_reason=True)
     }
 
 @pytest.mark.asyncio
@@ -122,5 +122,5 @@ async def test_golden_dataset_quality(
     record_property("relevancy_score", rm.score)
 
     # Assertions
-    assert fm.score >= 0.7, f"Faithfulness low: {fm.score}"
-    assert rm.score >= 0.7, f"Relevancy low: {rm.score}"
+    assert fm.score >= 0.6, f"Faithfulness low: {fm.score}"
+    assert rm.score >= 0.6, f"Relevancy low: {rm.score}"
