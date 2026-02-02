@@ -12,7 +12,6 @@ def render_header():
     st.markdown("""
     <div class="main-header">
         <h1>⚡ 쇼특허 (Short-Cut)</h1>
-        <p style="font-size: 1.2rem; color: #888;">RAG 기반 AI 특허 분석 & 선행 기술 조사 솔루션</p>
         <p style="font-size: 1.2rem; color: #888;">특허 검색부터 분석까지, 가장 빠른 지름길</p>
     </div>
     """, unsafe_allow_html=True)
