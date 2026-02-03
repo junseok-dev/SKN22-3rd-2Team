@@ -31,11 +31,17 @@
 
 | 기능 | 설명 |
 |------|------|
-| 🔍 **HyDE 검색** | 가상 청구항 생성 후 유사 특허 검색 |
-| 🔄 **Hybrid Search** | Dense (Pinecone) + Sparse (BM25) 융합 검색 |
-| 📊 **Self-Grading** | LLM이 검색 결과의 관련성을 자체 평가 |
-| 🧠 **CoT Analysis** | Chain-of-Thought 기반 침해 리스크 분석 |
-| ⚡ **Streaming** | 실시간 분석 결과 스트리밍 |
+| **HyDE** | 사용자 아이디어로부터 '가상 청구항'을 생성하여 검색 재현율(Recall)을 획기적으로 향상 |
+| **Multi-Query RAG** | 기술적/법적/문제해결 관점으로 쿼리를 자동 확장하여 검색 누락 최소화 |
+| **Hybrid Search** | Pinecone Serverless (Dense + Sparse) 통합 인덱스 검색으로 정확도 극대화 |
+| **RAG Evaluation** | **DeepEval** 프레임워크를 활용한 답변의 충실도(Faithfulness) 및 관련성(Relevancy) 자동 검증 |
+| **Reranker** | Cross-Encoder 모델을 활용하여 검색 결과의 관련성 정밀 재정렬 |
+| **Intelligent Parsing** | Regex → 구조 분석 → NLP → Fallback의 **4-Level 청구항 파싱**으로 비정형 데이터 정복 |
+| **Claim-Level Analysis** | '모든 구성요소 법칙(All Elements Rule)'을 적용한 특허 침해 리스크 정밀 진단 |
+| **Feedback Loop** | 분석 결과에 대한 사용자 피드백(👍/👎) 수집 및 검색 품질 개선 엔진 |
+| **Guardian Map** | 아이디어를 성(Castle)으로, 위협 특허를 침입자로 시각화한 **직관적 방어 전략 지도** |
+| **PDF Report** | 분석된 모든 내용을 깔끔한 PDF 보고서로 자동 생성 및 다운로드 |
+| **지식재산권 용어 사전 제공** | 특허 분야가 생소한 사용자를 위해 필수 지식재산권 용어를 정리한 PDF 가이드를 사이드바에서 상시 제공 |
 
 ---
 
@@ -290,4 +296,9 @@ SKN22-3rd-2Team/
 
 ## 📄 라이선스
 
-MIT License - 자세한 내용은 [LICENSE](LICENSE) 파일을 참조하세요.
+MIT License
+
+---
+
+## 👥 Team 뀨💕
+**쇼특허 (Short-Cut)** - "특허 분석의 지름길을 제시합니다." 
